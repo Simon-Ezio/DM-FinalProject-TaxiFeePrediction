@@ -1,0 +1,215 @@
+---
+title: "FinalProject"
+author: "Ximu Wang"
+date: "2019/4/9"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r}
+library(dplyr)
+library(pROC)
+library(rsample)
+library(xgboost)
+```
+## Import data
+Import the data with real distance and duration
+```{r}
+train <- read.csv("train_final 2.csv")
+test <- read.csv("test_final 2.csv")
+head(train)
+```
+```{r}
+summary(train)
+```
+delete the fare amount less than 0
+```{r}
+train <- train[train$fare_amount >= 0,]
+```
+remove missing data
+```{r}
+colSums(is.na(train))
+```
+
+Summary in picture
+```{r}
+library(ggplot2)
+
+ggplot(data = train[train$fare_amount <= 80,], aes(x = fare_amount)) + 
+  geom_histogram(col = "black", fill = "lightblue", bins = 100) +
+  labs(title = "Histogram of fare_amount")
+```
+
+delete the data out of test set
+```{r}
+longitude.min <- min(min(test$pickup_longitude), min(test$dropoff_longitude))
+longitude.min
+longitude.max <- max(max(test$pickup_longitude), max(test$dropoff_longitude))
+longitude.max
+```
+```{r}
+latitude.min <- min(min(test$pickup_latitude), min(test$dropoff_latitude))
+latitude.min
+latitude.max <- max(max(test$pickup_latitude), max(test$dropoff_latitude))
+latitude.max
+```
+present window on map
+```{r}
+#window
+wind <- c(-74.5, -72.8, 40.60, 41.8)
+
+fun.selectWind <- function(data, wind){
+  return(data$pickup_longitude >= wind[1] & data$pickup_longitude <= wind[2] &
+           data$pickup_latitude >= wind[3] & data$pickup_latitude <= wind[4] &
+           data$dropoff_longitude >= wind[1] & data$dropoff_longitude <= wind[2] &
+           data$dropoff_latitude >= wind[3] & data$dropoff_latitude <= wind[4])
+}
+```
+refine the train set
+```{r}
+train <- train[fun.selectWind(train, wind),]
+```
+
+show the pick up location and drop off location on map
+```{r}
+library(ggmap)
+register_google(key = "AIzaSyDLMjTSWFJozOFnS0bLIuu4RH5Eibjp0V4")
+```
+
+```{r}
+map <- get_googlemap(center = c(-74, 40.75), maptype = "roadmap", zoom = 10)
+mapplot.pickup <- ggmap(map) + labs(x = "longitude", y = "latitude") + 
+  geom_point(aes(pickup_longitude,pickup_latitude),data=train,alpha=0.15, size=0.1, color="red")
+mapplot.pickup
+```
+
+```{r}
+mapplot.dropoff <- ggmap(map) + labs(x = "longitude", y="latitude")+
+  geom_point(aes(dropoff_longitude,dropoff_latitude),data=train,alpha=0.15,size=0.1,color="red")
+mapplot.dropoff
+```
+
+density map
+```{r}
+mapdensity.pickup <- ggmap(map) +
+  stat_density2d(data = train, aes(x = pickup_longitude, y = pickup_latitude, fill = ..level.., alpha = ..level..),geom="polygon", bins=500,h=0.02)+
+  scale_fill_gradient(low = "blue",high = "yellow")
+mapdensity.pickup
+```
+
+```{r}
+mapdensity.dropoff <- ggmap(map) +
+  stat_density2d(data = train, aes(x = dropoff_longitude, y = dropoff_latitude, fill = ..level.., alpha = ..level..),geom="polygon", bins=500,h=0.02)+
+  scale_fill_gradient(low = "blue",high = "yellow")
+mapdensity.dropoff
+```
+
+scatter:distance~fare
+```{r}
+ggplot(data = train, aes(x = distance_meter, y = fare_amount)) + geom_point(size = 1,alpha=0.2,color="blue")
+```
+zoom
+```{r}
+ggplot(data = train[train$distance_meter <= 37500 & train$fare_amount<=100,], aes(x = distance_meter, y = fare_amount)) + geom_point(size = 1,alpha=0.2,color="blue")
+```
+
+Add the time information
+
+```{r}
+train$year <- as.factor(format(as.POSIXlt(train$pickup_datetime,format='%Y-%m-%d %H:%M:%S'),format='%Y'))
+train$month <- as.factor(format(as.POSIXlt(train$pickup_datetime,format='%Y-%m-%d %H:%M:%S'),format='%m'))
+train$day <- format(as.POSIXlt(train$pickup_datetime),format="%d")
+```
+```{r}
+train$hour <- as.factor(format(as.POSIXlt(train$pickup_datetime,format='%Y-%m-%d %H:%M:%S'),format='%H'))
+```
+
+```{r}
+test$year <- as.factor(format(as.POSIXlt(test$pickup_datetime,format='%Y-%m-%d %H:%M:%S'),format='%Y'))
+test$month <- as.factor(format(as.POSIXlt(test$pickup_datetime,format='%Y-%m-%d %H:%M:%S'),format='%m'))
+test$day <- format(as.POSIXlt(test$pickup_datetime),format="%d")
+test$hour <- as.factor(format(as.POSIXlt(test$pickup_datetime,format='%Y-%m-%d %H:%M:%S'),format='%H'))
+```
+
+Add fare_per_distance
+```{r}
+train$fare_per_distance <- train$fare_amount/train$distance_meter * 1000
+```
+
+```{r}
+library(rpivotTable)
+rpivotTable(data = train, rows = "year", cols = "hour", vals = "fare_per_distance", aggregatorName = "Median", rendererName ="Line Chart", width="100%", height="400px")
+```
+
+use xgboost to predict
+features: "passenger_count","distance_meter","duration_by_second","Year","Month","Hour"
+          8,9,10,11,12,14
+```{r}
+change_test <- as.numeric(as.character(train$year))
+change_test[1:5]
+```
+
+```{r}
+train$year <- as.numeric(as.character(train$year))
+train$month <- as.numeric(as.character(train$month))
+train$hour <- as.numeric(as.character(train$hour))
+test$year <- as.numeric(as.character(test$year))
+test$month <- as.numeric(as.character(test$month))
+test$hour <- as.numeric(as.character(test$hour))
+```
+```{r}
+train.matrix <- xgb.DMatrix(data = as.matrix(train[,c(8,9,10,11,12,14)]), label = train$fare_amount)
+test.matrix <- xgb.DMatrix(data = as.matrix(test[,c(7,8,9,10,11,13)]))
+
+train_split <- initial_split(train, prop=0.9)
+cvtrain <- training(train_split)
+cvtest <- testing(train_split)
+cvtrain.matrix <- xgb.DMatrix(data = as.matrix(cvtrain[,c(8,9,10,11,12,14)]), label = cvtrain$fare_amount)
+cvtest.matrix <- xgb.DMatrix(data = as.matrix(cvtest[,c(8,9,10,11,12,14)]), label = cvtest$fare_amount)
+```
+
+```{r}
+params <- list(booster = 'gbtree',
+               objective = 'reg:linear',
+               eta = 0.03,
+               max_depth = 6,
+               n_estimators = 500)
+               subsample = 1,
+               min_child_weight = 1.5,
+               colsample_bytree = 0.2,
+               scale_pos_weight = 3,
+               gamma = 0.2,
+               lambda = 300)
+```
+```{r}
+xgb_cv <- xgb.cv(params = params, data = train.matrix, nfold = 4, print_every_n = 1, maximize = TRUE, nrounds = 1000, early_stopping_rounds = 75)
+```
+```{r}
+watchlist <- list(val=cvtest.matrix)
+```
+```{r}
+xgb.solve <- xgb.train(params = params, data = cvtrain.matrix, nrounds = 1000, watchlist = watchlist, early_stopping_rounds = 75)
+```
+```{r}
+fare_amount <- predict(xgb.solve, test.matrix)
+fare_amount
+```
+
+```{r}
+test$fare_amount <- fare_amount
+result <- test[, c("key", "fare_amount")]
+head(result)
+```
+```{r}
+write.csv(result,file = "result.csv", row.names = FALSE)
+```
+
+```{r}
+lalala <- read.csv("train.csv", nrows = 1000)
+head(lalala)
+```
+
+

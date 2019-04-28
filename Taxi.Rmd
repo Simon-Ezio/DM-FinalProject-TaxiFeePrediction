@@ -1,0 +1,126 @@
+---
+title: "Taxi"
+output: html_document
+---
+```{r}
+library(ggplot2)
+library(ggmap)
+library(rsample)
+library(ISLR)
+library(dplyr)
+library(ggpmisc)
+library(glmnet)
+library(pROC)
+library(car)
+library(MASS)
+library(class)
+library(rpart)
+library(ROCR)
+library(caret)
+library(locfit)
+library(plotly)
+library(rworldmap)
+library(rworldxtra)
+```
+
+```{r}
+test<-read.csv("test_final.csv")
+train<-read.csv("train_final.csv")
+```
+
+```{r}
+train.m<-subset(train,    train$pickup_latitude<=max(test$pickup_latitude)+0.05 & train$pickup_latitude>=40.60)
+# train.m<-subset(train.m,train.m$pickup_latitude>=40.60)
+train.m<-subset(train.m,train.m$pickup_longitude<=max(test$pickup_longitude)+0.05 & train.m$pickup_longitude>=min(test$pickup_longitude)-0.05)
+# train.m<-subset(train.m,train.m$pickup_longitude>=min(test$pickup_longitude)-0.05)
+
+train.m<-subset(train.m,train.m$dropoff_latitude<=max(test$dropoff_latitude)+0.05 & train.m$dropoff_latitude>=40.60)
+# train.m<-subset(train.m,train.m$dropoff_latitude>=40.60)
+train.m<-subset(train.m,train.m$dropoff_longitude<=max(test$dropoff_longitude)+0.05 & train.m$dropoff_longitude>=min(test$dropoff_longitude)-0.05)
+# train.m<-subset(train.m,train.m$dropoff_longitude>=min(test$dropoff_longitude)-0.05)
+
+train.m<-subset(train.m,train.m$fare_amount>2.5)
+
+train.m<-train.m[c("key","fare_amount","pickup_datetime","pickup_latitude","pickup_longitude","dropoff_latitude","dropoff_longitude","passenger_count","distance_meter","duration_by_second")]
+train.m$key<-as.character(train.m$key)
+train.m$pickup_datetime<-as.character(train.m$pickup_datetime,format='%Y-%m-%d %H:%M:%S')
+
+train.m<-train.m %>% mutate(
+Year=as.factor(format(as.POSIXlt(train.m$pickup_datetime),format='%Y')),
+Month=as.factor(format(as.POSIXlt(train.m$pickup_datetime),format='%m')),
+Day=as.factor(format(as.POSIXlt(train.m$pickup_datetime),format='%d')),
+Hour=as.factor(format(as.POSIXlt(train.m$pickup_datetime,format='%Y-%m-%d %H:%M:%S'),format='%H'))
+)
+
+test<-test %>% mutate(
+Year=as.factor(format(as.POSIXct(test$pickup_datetime),format='%Y')),
+Month=as.factor(format(as.POSIXct(test$pickup_datetime),format='%m')),
+Day=as.factor(format(as.POSIXlt(test$pickup_datetime),format='%d')),
+Hour=as.factor(format(as.POSIXlt(test$pickup_datetime,format='%Y-%m-%d %H:%M:%S'),format='%H'))
+)
+
+summary(train.m)
+```
+
+```{r}
+ggplot(as.data.frame(test),aes(x=distance_meter))+geom_histogram(binwidth = 1000)
+ggplot(as.data.frame(train.m),aes(x=distance_meter))+geom_histogram(binwidth = 1000)
+ggplot(as.data.frame(train.m),aes(x=fare_amount))+geom_histogram(binwidth = 2)
+
+summary(test$distance_meter)
+
+```
+
+```{r}
+set.seed(1)
+test_train_split<-train.m[c("fare_amount","passenger_count","distance_meter","duration_by_second","Year","Month","Hour")]
+test_train_split<-initial_split(test_train_split,prop = 0.9)
+Ftest<-testing(test_train_split)
+Ftrain<-training(test_train_split)
+F<-glm(fare_amount~. ,data = Ftrain)
+
+summary(F)
+P_TRAIN =round(as.numeric(predict(F, newdata = Ftest, type = "response")),2)
+sqrt(mean((Ftest$fare_amount - P_TRAIN) ^ 2))
+
+```
+
+```{r}
+ggplot(as.data.frame(train.m[train.m$Year==2010,]),aes(x =fare_amount,y=Year))+geom_jitter()
+ggplot(as.data.frame(test),aes(x=distance_meter))+geom_histogram(binwidth = 1000)
+
+c1<-subset(train.m,train.m$fare_amount<100 & train.m$distance_meter>100000 & train.m$distance_meter<150000)
+ggplot(as.data.frame(train.m),aes(x =fare_amount,y=distance_meter))+geom_point()+ylim(0,80000)+xlim(0,250)
+ggplot(as.data.frame(c1),aes(x =fare_amount,y=distance_meter))+geom_point()
+
+map1 <- getMap(resolution = "high")
+# -74.5, -72.8, 40.5, 41.8
+plot(newmap, xlim = c( min(c1$dropoff_longitude), max(c1$dropoff_longitude)), ylim = c(min(c1$dropoff_latitude), max(c1$dropoff_latitude)))
+points(c1$dropoff_longitude, c1$dropoff_latitude, col = "red", cex = .2)
+points(c1$pickup_longitude, c1$pickup_latitude, col = "blue", cex = .2)
+
+
+```
+
+```{r}
+x = model.matrix(fare_amount~.,Ftrain)
+y = as.matrix(Ftrain$fare_amount)
+lasso_model<-glmnet(x,y,alpha = 1)
+bestlambda<-cv.glmnet(x,y,alpha = 1,nfolds = 5)$lambda.min
+summary(lasso_model)
+lasso_pred<-predict(lasso_model, newx = model.matrix(~.,Ftest[2:7]), type = "response",s=bestlambda)
+sqrt(mean((Ftest$fare_amount - lasso_pred) ^ 2))
+```
+```{r}
+data<-test[c("passenger_count","distance_meter","duration_by_second","Year","Month","Hour")]
+P_TEST=predict(lasso_model,model.matrix(~.,data),type = "response",s=bestlambda)
+result<-test[c("key")] %>% 
+  mutate(fare_amount=round(P_TEST,2))
+# Score("passenger_count","distance_meter","duration_by_second")=5.1666 Rank 1174-
+# Score("distance_meter","duration_by_second")=5.1664
+# Score with splited date and time = 5.01923
+# Score with lasso and splited date and time = 5.01866
+write.csv(result,'data_submission.csv',quote = FALSE,row.names = FALSE)
+as.data.frame(result)
+```
+
